@@ -1,0 +1,1 @@
+# q3map2_minimap
