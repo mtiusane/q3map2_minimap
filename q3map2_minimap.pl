@@ -5,12 +5,14 @@
 use strict;
 use warnings;
 use File::Temp;
-use File::Path qw/make_path remove_tree/;
+use File::Path qw/make_path/;
 use File::Find;
 use File::Copy;
 use File::Basename qw /dirname fileparse/;
 use List::Util qw/min max reduce/;
 use List::MoreUtils qw/uniq/;
+
+my $INCLUDE_MAP = 1;
 
 # my $minimapMaterial = "combat-t3/minimap-region";
 my $unvPath = "$ENV{HOME}/.local/share/unvanquished";
@@ -18,7 +20,7 @@ my $unvHome = "$ENV{HOME}/.unvanquished";
 my $radiantPath = "$ENV{HOME}/Documents/Programs/netradiant-20150621-ubuntu15-x86_64";
 my $q3map2 = "$radiantPath/q3map2.x86_64";
 
-my $longName = "^7Combat ^1T3^7 1.0 / beta1";
+my $longName = "^7Combat ^1T3^7 1.1 / beta1";
 my $author = "CU[dragoon]ams";
 
 my $path = shift || die "Syntax: $0 path <args...>";
@@ -27,6 +29,9 @@ my $tmp = File::Temp->newdir(
 #    CLEANUP => 0
 );
 my $tmpdir = $tmp->dirname;
+my ($mapName,$mapDir,$mapExt) = fileparse($path,qr/\.[^.]*/);
+my $mapPath = "$tmpdir/maps/$mapName$mapExt";
+
 print "TMP: $tmpdir\n";
 find({
     no_chdir => 1,
@@ -44,19 +49,16 @@ find({
 	    }
 	}
     }
-}, qw/maps scripts levelshots textures/);
+}, qw/maps scripts meta textures/);
 make_path("$tmpdir/maps");
 make_path("$tmpdir/minimaps");
-make_path("$tmpdir/meta");
 
 # exit;
-
-my ($mapName,$mapPrefix,$mapExt) = fileparse($path,qr/\.[^.]*/);
-my $mapPath = "$tmpdir/maps/$mapName$mapExt";
+srand(time);
 
 # print "Writing map file: $mapPath\n";
 open FO,'>',$mapPath or die $!;
-my $entity;
+my $entity = { classname => '', line_fn => sub { $_[0] } };
 my $brush;
 my @regions;
 open FI,'<',$path or die $!;
@@ -65,16 +67,21 @@ while (defined(my $line = <FI>)) {
     chomp($line);
     $depth += ($line =~ tr/{/{/) - ($line =~ tr/}/}/);
     if ($depth == 0 && $line =~ /^\s*\/\/\s+entity.*$/) {
-	$entity = { classname => undef };
+	$entity = { classname => '', line_fn => sub { $_[0] } };
 	$brush = undef;
 	print FO "$line\n";
     } elsif ($depth == 1 && $line =~ /^\s*"classname"\s+"(.+)"\s*$/) {
 	$entity->{classname} = $1;
+	if ($entity->{classname} eq 'func_group') {
+	    my $index = int(rand(8));
+	    $entity->{line_fn} = sub { $_[0] =~ s|combat-t3/lightbridge\d*|"combat-t3/lightbridge$index"|re };
+	} else {
+	    $entity->{line_fn} = sub { $_[0] =~ s|combat-t3/lightbridge\d*|"combat-t3/lightbridge".$brush->{index}|re };
+	}
 	print FO "$line\n";
-    } elsif ($depth >= 1 && ($entity->{classname} // '') eq 'worldspawn') {
+    } elsif ($depth >= 1 && $entity->{classname} ne '') {
 	if ($depth == 1 && $line =~ /^\s*\/\/\s+brush.+$/) {
-	    $brush = { isRegion => 0, lines => [ $line ], brushes => [ ] };	
-	    print FO "$line\n";
+	    $brush = { isRegion => 0, lines => [ $line ], planes => [ ], index => int(rand(8)) };
 	} elsif ($depth == 1 && $line =~ /^\s*{\s*$/) {
 	    push @{$brush->{lines}},$line;
 	} elsif ($depth == 1 && $line =~ /^\s*}\s*$/) {
@@ -88,11 +95,13 @@ while (defined(my $line = <FI>)) {
 	} elsif ($depth == 2 && defined($brush)) {
 	    if ($line =~ /^\s*\(\s*(?<x0>-?\d+)\s+(?<y0>-?\d+)\s+(?<z0>-?\d+)\s*\)\s+\(\s*(?<x1>-?\d+)\s+(?<y1>-?\d+)\s+(?<z1>-?\d+)\s*\)\s+\(\s*(?<x2>-?\d+)\s+(?<y2>-?\d+)\s+(?<z2>-?\d+)\s*\)\s*combat-t3\/minimap-region\s+.*$/) {
 		$brush->{isRegion} = 1;
-		push @{$brush->{brushes}}, { %+ };
+		push @{$brush->{planes}}, { %+ };
 	    } elsif ($line !~ /^\s*$/ && $line !~ /^}$/) {
 		$brush->{isRegion} = 0;
 	    }
-	    push @{$brush->{lines}},$line;
+	    push @{$brush->{lines}},$entity->{line_fn}->($line);
+	} else {
+	    print FO "$line\n";
 	}
     } else {
 	print FO "$line\n";
@@ -101,13 +110,15 @@ while (defined(my $line = <FI>)) {
 close FI;
 close FO;
 
+# exit;
+
 my @areas = map {
     my $region = $_;
     my @planes;
-    foreach my $brush (@{$region->{brushes}}) {
-	my $v0 = vec3(map { $brush->{$_} } qw/x0 y0 z0/);
-	my $v1 = vec3(map { $brush->{$_} } qw/x1 y1 z1/);
-	my $v2 = vec3(map { $brush->{$_} } qw/x2 y2 z2/);
+    foreach my $plane (@{$region->{planes}}) {
+	my $v0 = vec3(map { $plane->{$_} } qw/x0 y0 z0/);
+	my $v1 = vec3(map { $plane->{$_} } qw/x1 y1 z1/);
+	my $v2 = vec3(map { $plane->{$_} } qw/x2 y2 z2/);
 	my $a = subtract($v1, $v0);
 	my $b = subtract($v2, $v0);
 	my $n = normalize(cross($a, $b));
@@ -170,13 +181,13 @@ for(my $i=0;$i<$#edgesX;++$i)
 #     print "Area: (",join(' ',map { $area->{min}->{$_} } qw/x y z/),") to (",join(' ',map { $area->{max}->{$_} } qw/x y z/),")\n";
 # }
 
-# run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -meta -custinfoparams $mapPath");
-# run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -vis -fast -saveprt $mapPath");
-# run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -light -faster -patchshadows $mapPath");
+run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -meta -custinfoparams $mapPath");
+run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -vis -fast -saveprt $mapPath");
+run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -light -faster -patchshadows $mapPath");
 
-run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -meta -custinfoparams -samplesize 8 $mapPath");
-run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -vis -saveprt $mapPath");
-run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -light -fast -shade -dirty -patchshadows -samples 3 -samplesize 8 -bouncegrid -bounce 16 -deluxe -lightmapsize 1024 -external $mapPath");
+# run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -meta -custinfoparams -samplesize 8 $mapPath");
+# run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -vis -saveprt $mapPath");
+# run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -light -fast -shade -dirty -patchshadows -samples 3 -samplesize 8 -bouncegrid -bounce 16 -deluxe -lightmapsize 1024 -external $mapPath");
 
 for(my $i=0;$i<=$#finalAreas;++$i)
 {
@@ -186,6 +197,10 @@ for(my $i=0;$i<=$#finalAreas;++$i)
     # print "Moving: $tmpdir/maps/$mapName.tga to $tmpdir/maps/$mapName"."_region$i.tga\n";
     move("$tmpdir/maps/$mapName.tga","$tmpdir/minimaps/$mapName"."_region$i.tga") or die $!;
 }
+
+unlink("$tmpdir/maps/$mapName.map") unless($INCLUDE_MAP);
+unlink("$tmpdir/maps/$mapName.prt");
+unlink("$tmpdir/maps/$mapName.srf");
 
 open FO,'>',"$tmpdir/minimaps/$mapName.minimap" or die $!;
 print FO "{\n";
@@ -201,26 +216,22 @@ for(my $i=0;$i<=$#finalAreas;++$i)
 print FO "}\n";
 close FO;
 
-make_path("$tmpdir/meta/$mapName");
 open FO,'>',"$tmpdir/meta/$mapName/$mapName.arena";
 print FO "{\n";
 print FO "\tmap      \"$mapName\"\n";
 print FO "\tlongname \"$longName\"\n";
 print FO "\tauthor   \"$author\"\n";
-print FO "\ttype     \"unvanquished\"\n";
+print FO "\ttype     \"tremulous\"\n";
+print FO "}\n";
 close FO;
-
-copy("$tmpdir/levelshots/$mapName.jpg","$tmpdir/meta/$mapName/$mapName.jpg");
 
 open FO,'>',"$tmpdir/DEPS";
 print FO "tex-all\n";
 close FO;
 
-remove_tree "$tmpdir/levelshots";
-
 my $olddir = $ENV{PWD};
 chdir $tmpdir;
-run_command("zip -r \"$olddir/map-combat-t3_1.0.pk3\" .");
+run_command("zip -r \"$olddir/map-combat-t3_1.1.pk3\" .");
 chdir $olddir;
 
 sub anyAreaContainsPoint {
