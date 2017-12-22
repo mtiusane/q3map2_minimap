@@ -12,27 +12,49 @@ use File::Basename qw /dirname fileparse/;
 use List::Util qw/min max reduce/;
 use List::MoreUtils qw/uniq/;
 
-my $INCLUDE_MAP = 1;
+my $INCLUDE_MAP = 0;
+my $FINAL_BUILD = 0;
+my $INCLUDE_NAV = 0;
+my $KEEP_TMP    = 0;
 
 # my $minimapMaterial = "combat-t3/minimap-region";
 my $unvPath = "$ENV{HOME}/.local/share/unvanquished";
 my $unvHome = "$ENV{HOME}/.unvanquished";
 my $radiantPath = "$ENV{HOME}/Documents/Programs/netradiant-20150621-ubuntu15-x86_64";
 my $q3map2 = "$radiantPath/q3map2.x86_64";
+my $daemonmap = "/usr/local/Unvanquished/daemonmap";
 
-my $longName = "^7Combat ^1T3^7 1.1 / beta1";
+my $longName = "^7Combat ^1T3^7 1.4 / beta1";
 my $author = "CU[dragoon]ams";
 
-my $path = shift || die "Syntax: $0 path <args...>";
+my $zipName = "map-combat-t3_1.4.pk3";
 
-my $tmp = File::Temp->newdir(
-#    CLEANUP => 0
-);
+my $path = shift || die "Syntax: $0 path <args...>";
+my $optionsCount = 0;
+while(defined(my $option = shift)) {
+    if($option =~ /^--include_map$/) {
+	$INCLUDE_MAP = 1;
+    } elsif ($option =~ /^--final_build$/) {
+	$FINAL_BUILD = 1;
+    } elsif ($option =~ /^--use_daemonmap$/) {
+	$q3map2 = '/usr/local/Unvanquished/daemonmap';
+	$INCLUDE_NAV = 1;
+	# TODO: This does not work, daemonmap not recognizing all q3map2 parameters
+    } elsif ($option =~ /^--include_nav$/) {
+	$INCLUDE_NAV = 1;
+    } elsif ($option =~ /^--keep_tmp$/) {
+	$KEEP_TMP = 1;
+    } else {
+	die "Unrecognized option: $option";
+    }
+}
+
+my $tmp = File::Temp->newdir(CLEANUP => !$KEEP_TMP);
 my $tmpdir = $tmp->dirname;
 my ($mapName,$mapDir,$mapExt) = fileparse($path,qr/\.[^.]*/);
 my $mapPath = "$tmpdir/maps/$mapName$mapExt";
 
-print "TMP: $tmpdir\n";
+print "Temporary directory: \"$tmpdir\" will not be removed.\n" if ($KEEP_TMP);
 find({
     no_chdir => 1,
     wanted =>  sub {
@@ -177,17 +199,24 @@ for(my $i=0;$i<$#edgesX;++$i)
     }
 }
 
+# my $totalArea = {
+#     min => { x => $edgesX[0], y => $edgesY[0], z => $edgesZ[0] },
+#     max => { x => $edgesX[$#edgesX], y => $edgesY[$#edgesY], z => $edgesZ[$#edgesZ] }
+# }
+
 # foreach my $area (@finalAreas) {
 #     print "Area: (",join(' ',map { $area->{min}->{$_} } qw/x y z/),") to (",join(' ',map { $area->{max}->{$_} } qw/x y z/),")\n";
 # }
 
-run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -meta -custinfoparams $mapPath");
-run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -vis -fast -saveprt $mapPath");
-run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -light -faster -patchshadows $mapPath");
-
-# run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -meta -custinfoparams -samplesize 8 $mapPath");
-# run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -vis -saveprt $mapPath");
-# run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -light -fast -shade -dirty -patchshadows -samples 3 -samplesize 8 -bouncegrid -bounce 16 -deluxe -lightmapsize 1024 -external $mapPath");
+if ($FINAL_BUILD) {
+    run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -meta -custinfoparams -samplesize 8 $mapPath");
+    run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -vis -saveprt $mapPath");
+    run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -light -fast -shade -dirty -patchshadows -samples 3 -samplesize 8 -bouncegrid -bounce 16 -deluxe -lightmapsize 1024 -external $mapPath");
+} else {
+    run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -meta -custinfoparams $mapPath");
+    run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -vis -fast -saveprt $mapPath");
+    run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -light -faster -patchshadows $mapPath");
+}
 
 for(my $i=0;$i<=$#finalAreas;++$i)
 {
@@ -198,9 +227,17 @@ for(my $i=0;$i<=$#finalAreas;++$i)
     move("$tmpdir/maps/$mapName.tga","$tmpdir/minimaps/$mapName"."_region$i.tga") or die $!;
 }
 
-unlink("$tmpdir/maps/$mapName.map") unless($INCLUDE_MAP);
-unlink("$tmpdir/maps/$mapName.prt");
-unlink("$tmpdir/maps/$mapName.srf");
+# run_command("\"$q3map2\" -v -game unvanquished -fs_basepath \"$unvPath\" -fs_homepath \"$unvHome\" -fs_game pkg -nav $tmpdir/maps/$mapName.bsp") if ($INCLUDE_NAV);
+if ($INCLUDE_NAV) {
+    my $olddir = $ENV{PWD};
+    chdir "$tmpdir/maps";
+    run_command("\"$daemonmap\" -game unv -nav \"$tmpdir/maps/$mapName.bsp\"");
+    chdir $olddir;
+}
+
+unlink("$tmpdir/maps/$mapName".'.map') unless($INCLUDE_MAP);
+unlink("$tmpdir/maps/$mapName".'.prt');
+unlink("$tmpdir/maps/$mapName".'.srf');
 
 open FO,'>',"$tmpdir/minimaps/$mapName.minimap" or die $!;
 print FO "{\n";
@@ -231,7 +268,7 @@ close FO;
 
 my $olddir = $ENV{PWD};
 chdir $tmpdir;
-run_command("zip -r \"$olddir/map-combat-t3_1.1.pk3\" .");
+run_command("zip -r \"$olddir/$zipName\" .");
 chdir $olddir;
 
 sub anyAreaContainsPoint {
